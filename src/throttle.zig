@@ -41,14 +41,14 @@ pub const Throttle = struct {
     interval_duration: i64,
     max_hits_in_interval: i64,
     lockout_duration: i64,
-    counter: Counter,
+    window: SlidingWindow,
 
-    pub const Counter = struct {
-        interval_start: i64,
-        current_hit_counter: i64,
+    pub const SlidingWindow = struct {
+        start: i64,
+        hits: i64,
         locked_until: i64,
 
-        pub fn destroy(self: *Counter, allocator: Allocator) void {
+        pub fn destroy(self: *SlidingWindow, allocator: Allocator) void {
             allocator.destroy(self);
         }
     };
@@ -61,9 +61,9 @@ pub const Throttle = struct {
             .interval_duration = interval,
             .max_hits_in_interval = max_hits,
             .lockout_duration = lockout_duration,
-            .counter = .{
-                .interval_start = now,
-                .current_hit_counter = 0,
+            .window = .{
+                .start = now,
+                .hits = 0,
                 .locked_until = 0,
             },
         };
@@ -72,38 +72,37 @@ pub const Throttle = struct {
     /// When a monitored activity occurs, `isThrottled()` counts that event and
     /// returns `true` if the activity count has exceeded the limit.
     pub fn isThrottled(self: *Throttle) bool {
-        self.counter.current_hit_counter += 1;
+        self.window.hits += 1;
         var now: i64 = 0;
-        if (self.counter.locked_until != 0) {
+        if (self.window.locked_until != 0) {
             now = std.time.microTimestamp();
-            if (self.counter.locked_until > now)
+            if (self.window.locked_until > now)
                 return true;
-            self.counter.locked_until = 0;
+            self.window.locked_until = 0;
         }
-        if (self.counter.current_hit_counter <= self.max_hits_in_interval)
+        if (self.window.hits <= self.max_hits_in_interval)
             return false;
 
         if (now == 0)
             now = std.time.microTimestamp();
 
-        if (self.counter.locked_until > 0) {
-            if (self.counter.locked_until > now)
+        if (self.window.locked_until > 0) {
+            if (self.window.locked_until > now)
                 return true;
 
-            //println!("reset all");
-            self.counter.interval_start = now;
-            self.counter.locked_until = 0;
-            self.counter.current_hit_counter = 1;
+            self.window.start = now;
+            self.window.locked_until = 0;
+            self.window.hits = 1;
             return false;
         }
-        if (now - self.counter.interval_start <= self.interval_duration) {
-            self.counter.interval_start = now;
-            self.counter.current_hit_counter = 1;
-            self.counter.locked_until = now + self.lockout_duration;
+        if (now - self.window.start <= self.interval_duration) {
+            self.window.start = now;
+            self.window.hits = 1;
+            self.window.locked_until = now + self.lockout_duration;
             return true;
         }
-        self.counter.interval_start = now;
-        self.counter.current_hit_counter = 1;
+        self.window.start = now;
+        self.window.hits = 1;
         return false;
     }
 };
@@ -132,47 +131,46 @@ pub fn ThrottleCache(comptime T: type) type {
         interval_duration: i64 = 0,
         max_hits_in_interval: i64 = 0,
         lockout_duration: i64 = 0,
-        counters: LRU(T, *Throttle.Counter),
+        cache: LRU(T, *Throttle.SlidingWindow),
 
         const Self = @This();
 
         /// Within `interval` only allow `max_hits` or the locked status is set for `lockout_duration`
         pub fn init(interval: i64, max_hits: i64, lockout_duration: i64) Self {
-            //println!("Maximum {} hits in {} millisconds.\n", max_hits, interval);
             var cache: Self = .{
                 .interval_duration = interval,
                 .max_hits_in_interval = max_hits,
                 .lockout_duration = lockout_duration,
-                .counters = LRU(T, *Throttle.Counter).init(10000),
+                .cache = LRU(T, *Throttle.SlidingWindow).init(10000),
             };
-            cache.counters.entry_dealloc = Throttle.Counter.destroy;
+            cache.cache.entry_dealloc = Throttle.SlidingWindow.destroy;
             return cache;
         }
 
         pub inline fn deinit(self: *Self, allocator: Allocator) void {
-            self.counters.deinit(allocator);
+            self.cache.deinit(allocator);
         }
 
         /// When a monitored activity occurs, `isThrottled()` counts that event and
         /// returns `true` if the activity count has exceeded the limit.
         pub fn isThrottled(self: *Self, allocator: Allocator, key: T) error{OutOfMemory}!bool {
-            var counter: *Throttle.Counter = undefined;
+            var counter: *Throttle.SlidingWindow = undefined;
 
-            const entry = self.counters.get(key);
+            const entry = self.cache.get(key);
             if (entry != null) {
                 counter = entry.?;
             } else {
                 const now = std.time.microTimestamp();
-                counter = try allocator.create(Throttle.Counter);
+                counter = try allocator.create(Throttle.SlidingWindow);
                 counter.* = .{
-                    .interval_start = now,
+                    .start = now,
                     .locked_until = 0,
-                    .current_hit_counter = 0,
+                    .hits = 0,
                 };
-                _ = try self.counters.put(allocator, key, counter);
+                _ = try self.cache.put(allocator, key, counter);
             }
 
-            counter.current_hit_counter += 1;
+            counter.hits += 1;
             var now: i64 = 0;
             if (counter.locked_until != 0) {
                 now = std.time.microTimestamp();
@@ -181,7 +179,7 @@ pub fn ThrottleCache(comptime T: type) type {
 
                 counter.locked_until = 0;
             }
-            if (counter.current_hit_counter <= self.max_hits_in_interval)
+            if (counter.hits <= self.max_hits_in_interval)
                 return false;
 
             if (now == 0)
@@ -191,19 +189,19 @@ pub fn ThrottleCache(comptime T: type) type {
                 if (counter.locked_until > now)
                     return true;
 
-                counter.interval_start = now;
+                counter.start = now;
                 counter.locked_until = 0;
-                counter.current_hit_counter = 1;
+                counter.hits = 1;
                 return false;
             }
-            if (now - counter.interval_start <= self.interval_duration) {
-                counter.interval_start = now;
-                counter.current_hit_counter = 1;
+            if (now - counter.start <= self.interval_duration) {
+                counter.start = now;
+                counter.hits = 1;
                 counter.locked_until = now + self.lockout_duration;
                 return true;
             }
-            counter.interval_start = now;
-            counter.current_hit_counter = 1;
+            counter.start = now;
+            counter.hits = 1;
             return false;
         }
     };
