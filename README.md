@@ -30,7 +30,7 @@ lockout for 5 minutes.
 ```zig
 var counter = StringThrottleCache.init(std.time.us_per_min * 1, 5, std.time.us_per_m * 5);
 const email = "john@example.com";
-if (counter.isThrottled(&email)) {
+if (counter.isThrottled(email)) {
     std.log.warn("Try again later");
 }
 ```
