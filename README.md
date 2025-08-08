@@ -30,7 +30,10 @@ Limit signin attempts on an email address to 5 per minute, or
 lockout for 5 minutes.
 
 ```zig
-var counter = StringThrottleCache.init(std.time.us_per_min * 1, 5, std.time.us_per_m * 5);
+pub const StringThrottleCache = @import("throttle").StringThrottleCache;
+pub const us_per_min = std.time.us_per_min;
+
+var counter = StringThrottleCache.init(us_per_min * 1, 5, us_per_m * 5);
 const email = "john@example.com";
 if (counter.isThrottled(email)) {
     std.log.warn("Try again later");
@@ -41,7 +44,10 @@ Limit  signin attemps from an IP address to 5 attempts per
 minute, or lockout for 2 minutes.
 
 ```zig
-var counter = ThrottleCache.init(i128, std.time.us_per_min * 1, 5, std.time.us_per_min * 2);
+pub const ThrottleCache = @import("throttle").ThrottleCache;
+pub const us_per_min = std.time.us_per_min;
+
+var counter = ThrottleCache.init(i128, us_per_min * 1, 5, us_per_min * 2);
 if (counter.isThrottled(ip_address) {
     std.log.warn("Try again later");
 }
